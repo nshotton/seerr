@@ -435,7 +435,6 @@ class Media {
   }
 
   public filter(user?: User): Media {
-    const isAdmin = user?.hasPermission(Permission.ADMIN) ?? false;
     const canViewIssues =
       user?.hasPermission(
         [
@@ -447,15 +446,16 @@ class Media {
       ) ?? false;
 
     // Household Island Isolation:
-    // Non-admin users only see requests belonging to their household island
+    // Every user (including Noah) has their own private household island.
+    // They only see requests belonging to their household island.
     const userRequests = (this.requests ?? []).filter(
-      (request) => isAdmin || request.requestedBy?.id === user?.id
+      (request) => request.requestedBy?.id === user?.id
     );
 
     let effectiveStatus = this.status;
     let effectiveStatus4k = this.status4k;
 
-    if (!isAdmin && user) {
+    if (user) {
       const hasCompleted = userRequests.some(
         (req) => req.status === MediaRequestStatus.COMPLETED && !req.is4k
       );
@@ -494,7 +494,7 @@ class Media {
     }
 
     let effectiveSeasons = this.seasons;
-    if (!isAdmin && user && this.seasons) {
+    if (user && this.seasons) {
       const userSeasonNumbers = new Set(
         userRequests.flatMap((r) => r.seasons?.map((s) => s.seasonNumber) ?? [])
       );
@@ -510,17 +510,30 @@ class Media {
       });
     }
 
+    // Strip playback deep links unless the media is AVAILABLE for this specific user's island
+    const isAvailableForUser = effectiveStatus === MediaStatus.AVAILABLE;
+    const is4kAvailableForUser = effectiveStatus4k === MediaStatus.AVAILABLE;
+
     return {
       ...this,
       status: effectiveStatus,
       status4k: effectiveStatus4k,
+      mediaUrl: isAvailableForUser ? this.mediaUrl : undefined,
+      mediaUrl4k: is4kAvailableForUser ? this.mediaUrl4k : undefined,
+      iOSPlexUrl: isAvailableForUser ? this.iOSPlexUrl : undefined,
+      iOSPlexUrl4k: is4kAvailableForUser ? this.iOSPlexUrl4k : undefined,
+      jellyfinMediaId: isAvailableForUser ? this.jellyfinMediaId : undefined,
+      jellyfinMediaId4k: is4kAvailableForUser
+        ? this.jellyfinMediaId4k
+        : undefined,
+      ratingKey: isAvailableForUser ? this.ratingKey : undefined,
+      ratingKey4k: is4kAvailableForUser ? this.ratingKey4k : undefined,
       seasons: effectiveSeasons,
       requests: userRequests.map((request) => ({
         ...request,
         requestedBy: request.requestedBy?.filter(),
         modifiedBy: request.modifiedBy?.filter(),
       })),
-      // the detail pages call issues.filter() without a null check
       issues: canViewIssues
         ? (this.issues ?? []).map(
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
