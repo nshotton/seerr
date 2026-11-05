@@ -56,12 +56,19 @@ class Media {
           'media.id= watchlist.media and watchlist.requestedBy = :userId',
           { userId: user?.id }
         )
+        .leftJoinAndSelect('media.requests', 'request')
+        .leftJoinAndSelect('request.requestedBy', 'requestedBy')
+        .leftJoinAndSelect('media.seasons', 'seasons')
         .where(' media.tmdbId in (:...finalIds)', { finalIds })
         .getMany();
 
-      const relatedMedia = media.filter((m) =>
-        items.some((i) => i.tmdbId === m.tmdbId && i.mediaType === m.mediaType)
-      );
+      const relatedMedia = media
+        .filter((m) =>
+          items.some(
+            (i) => i.tmdbId === m.tmdbId && i.mediaType === m.mediaType
+          )
+        )
+        .map((m) => m.filter(user));
 
       if (
         includeActiveRequest &&
@@ -428,6 +435,7 @@ class Media {
   }
 
   public filter(user?: User): Media {
+    const isAdmin = user?.hasPermission(Permission.ADMIN) ?? false;
     const canViewIssues =
       user?.hasPermission(
         [
@@ -438,9 +446,76 @@ class Media {
         { type: 'or' }
       ) ?? false;
 
+    // Household Island Isolation:
+    // Non-admin users only see requests belonging to their household island
+    const userRequests = (this.requests ?? []).filter(
+      (request) => isAdmin || request.requestedBy?.id === user?.id
+    );
+
+    let effectiveStatus = this.status;
+    let effectiveStatus4k = this.status4k;
+
+    if (!isAdmin && user) {
+      const hasCompleted = userRequests.some(
+        (req) => req.status === MediaRequestStatus.COMPLETED && !req.is4k
+      );
+      const hasPendingOrApproved = userRequests.some(
+        (req) =>
+          (req.status === MediaRequestStatus.PENDING ||
+            req.status === MediaRequestStatus.APPROVED) &&
+          !req.is4k
+      );
+
+      if (hasCompleted) {
+        effectiveStatus = MediaStatus.AVAILABLE;
+      } else if (hasPendingOrApproved) {
+        effectiveStatus = MediaStatus.PROCESSING;
+      } else {
+        effectiveStatus = MediaStatus.UNKNOWN;
+      }
+
+      const hasCompleted4k = userRequests.some(
+        (req) => req.status === MediaRequestStatus.COMPLETED && req.is4k
+      );
+      const hasPendingOrApproved4k = userRequests.some(
+        (req) =>
+          (req.status === MediaRequestStatus.PENDING ||
+            req.status === MediaRequestStatus.APPROVED) &&
+          req.is4k
+      );
+
+      if (hasCompleted4k) {
+        effectiveStatus4k = MediaStatus.AVAILABLE;
+      } else if (hasPendingOrApproved4k) {
+        effectiveStatus4k = MediaStatus.PROCESSING;
+      } else {
+        effectiveStatus4k = MediaStatus.UNKNOWN;
+      }
+    }
+
+    let effectiveSeasons = this.seasons;
+    if (!isAdmin && user && this.seasons) {
+      const userSeasonNumbers = new Set(
+        userRequests.flatMap((r) => r.seasons?.map((s) => s.seasonNumber) ?? [])
+      );
+      effectiveSeasons = this.seasons.map((season) => {
+        if (!userSeasonNumbers.has(season.seasonNumber)) {
+          return {
+            ...season,
+            status: MediaStatus.UNKNOWN,
+            status4k: MediaStatus.UNKNOWN,
+          } as Season;
+        }
+        return season;
+      });
+    }
+
     return {
       ...this,
-      requests: (this.requests ?? []).map((request) => ({
+      status: effectiveStatus,
+      status4k: effectiveStatus4k,
+      seasons: effectiveSeasons,
+      requests: userRequests.map((request) => ({
         ...request,
         requestedBy: request.requestedBy?.filter(),
         modifiedBy: request.modifiedBy?.filter(),

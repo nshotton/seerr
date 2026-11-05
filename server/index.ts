@@ -1,3 +1,6 @@
+(process.env as any).NODE_ENV = 'production';
+process.env.PORT = process.env.PORT || '5055';
+process.env.HOST = process.env.HOST || '0.0.0.0';
 import csurf from '@dr.pogodin/csurf';
 import PlexAPI from '@server/api/plexapi';
 import dataSource, { getRepository } from '@server/datasource';

@@ -21,6 +21,7 @@ import notificationManager, { Notification } from '@server/lib/notifications';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
 import { withNestedTransaction } from '@server/utils/nestedTransaction';
+import axios from 'axios';
 import { isEqual, truncate } from 'lodash';
 import type {
   EntityManager,
@@ -1098,15 +1099,69 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
       return;
     }
 
+    const entity = event.entity as MediaRequest;
+
+    // Household Island Isolation:
+    // If media is already present in server storage from another household,
+    // instantly claim and zero-byte hardlink it directly into this user's household folder!
+    let claimedLocally = false;
     try {
-      await this.sendToRadarr(event.entity as MediaRequest, event.manager);
-      await this.sendToSonarr(event.entity as MediaRequest, event.manager);
-    } catch (e) {
-      logger.error('Error while sending to *arr in afterInsert subscriber', {
-        label: 'Media Request',
-        requestId: (event.entity as MediaRequest).id,
-        errorMessage: e instanceof Error ? e.message : String(e),
-      });
+      const tmdb = new TheMovieDb();
+      let title = '';
+      if (entity.type === MediaType.MOVIE && entity.media?.tmdbId) {
+        const m = await tmdb.getMovie({ movieId: entity.media.tmdbId });
+        title = m.title;
+      } else if (entity.media?.tmdbId) {
+        const s = await tmdb.getTvShow({ tvId: entity.media.tmdbId });
+        title = s.name;
+      }
+
+      if (title && entity.requestedBy) {
+        const claimResp = await axios.post(
+          'http://127.0.0.1:8088/api/households/claim_media',
+          {
+            userId: entity.requestedBy.id,
+            email: entity.requestedBy.email,
+            mediaType: entity.type,
+            title,
+            tmdbId: entity.media?.tmdbId,
+          },
+          { timeout: 4000 }
+        );
+
+        if (claimResp.data?.ok) {
+          logger.info(
+            `[Island Model] '${title}' is already on disk! Instantly linked to household for user ${entity.requestedBy.email}`,
+            { label: 'HouseholdIsland' }
+          );
+          entity.status = MediaRequestStatus.COMPLETED;
+          await event.manager.update(MediaRequest, entity.id, {
+            status: MediaRequestStatus.COMPLETED,
+          });
+          claimedLocally = true;
+        }
+      }
+    } catch (claimErr: any) {
+      logger.debug(
+        '[Island Model] Media not yet on disk or claim check skipped, forwarding to *arr',
+        {
+          label: 'HouseholdIsland',
+          errorMessage: claimErr.message,
+        }
+      );
+    }
+
+    if (!claimedLocally) {
+      try {
+        await this.sendToRadarr(event.entity as MediaRequest, event.manager);
+        await this.sendToSonarr(event.entity as MediaRequest, event.manager);
+      } catch (e) {
+        logger.error('Error while sending to *arr in afterInsert subscriber', {
+          label: 'Media Request',
+          requestId: (event.entity as MediaRequest).id,
+          errorMessage: e instanceof Error ? e.message : String(e),
+        });
+      }
     }
 
     try {

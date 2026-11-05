@@ -228,10 +228,15 @@ export class MediaRequest {
 
     if (existing && existing.length > 0) {
       // If there is an existing movie request that isn't declined, don't allow a new one.
+      const userExisting = existing.filter(
+        (r) => r.requestedBy?.id === requestUser.id
+      );
+
       if (
+        userExisting.length > 0 &&
         requestBody.mediaType === MediaType.MOVIE &&
-        existing[0].status !== MediaRequestStatus.DECLINED &&
-        existing[0].status !== MediaRequestStatus.COMPLETED
+        userExisting[0].status !== MediaRequestStatus.DECLINED &&
+        userExisting[0].status !== MediaRequestStatus.COMPLETED
       ) {
         logger.warn('Duplicate request for media blocked', {
           tmdbId: tmdbMedia.id,
@@ -404,21 +409,18 @@ export class MediaRequest {
           }, [] as number[]);
       }
 
-      // We should also check seasons that are available/partially available but don't have existing requests
-      if (media.seasons) {
-        existingSeasons = [
-          ...existingSeasons,
-          ...media.seasons
-            .filter(
-              (season) =>
-                season[requestBody.is4k ? 'status4k' : 'status'] !==
-                  MediaStatus.UNKNOWN &&
-                season[requestBody.is4k ? 'status4k' : 'status'] !==
-                  MediaStatus.DELETED
-            )
-            .map((season) => season.seasonNumber),
-        ];
-      }
+      // Household Island Isolation: Only exclude seasons this specific user has already requested
+      const userExistingRequests = (existing ?? []).filter(
+        (r) =>
+          r.requestedBy?.id === requestUser.id &&
+          r.status !== MediaRequestStatus.DECLINED
+      );
+      existingSeasons = userExistingRequests.reduce((seasons, req) => {
+        const combinedSeasons = req.seasons.map(
+          (season) => season.seasonNumber
+        );
+        return [...seasons, ...combinedSeasons];
+      }, [] as number[]);
 
       const finalSeasons = requestedSeasons.filter(
         (rs) => !existingSeasons.includes(rs)
